@@ -1,9 +1,4 @@
 import torch
-
-
-
-
-
 '''
 Symmetric quadrature lookup table. Given degree returns weights and points up to degree 6.
 

@@ -5,15 +5,15 @@ from fem_helpers_2d import (
         global_0_f,
         gradhat_phihat,
         global_1_1,
-        bary_to_cart,
-        detailed_node_identifier,
+        pts_bary_to_pts,
+        ref_nodal_pt_to_identity_detailed,
         edge_condition_to_dirichlet_mask,
         phihat)
 from fem_quadrature_2d import dunavant_rules
 
 degree = 2
 quad_bary_pts, quad_weights = dunavant_rules(degree)
-quad_cart_pts = bary_to_cart(quad_bary_pts)
+quad_cart_pts = pts_bary_to_pts(quad_bary_pts)
 precomputed_phihats = phihat(
         quad_cart_pts[..., -2],
         quad_cart_pts[..., -1],
@@ -78,8 +78,7 @@ for idx, triangle in enumerate(triangles):
         if edge_key not in top_to_edge:
             top_to_edge[edge_key] = edge_num
             edge_num+=1
-
-node_mapping = detailed_node_identifier(degree)
+node_mapping = ref_nodal_pt_to_identity_detailed(degree)
    
 number_of_edges = (
     3 * cells_1d**2
@@ -89,6 +88,52 @@ number_of_edges = (
 number_of_edge_points = (
     number_of_edges * (degree - 1)
 )
+
+from vectorized_fem_helpers_2d import (
+        vectorized_local_to_global,
+        edge_information,
+        vectorized_edge_condition_to_dirichlet_mask,
+        vectorized_global_1_1,
+        vectorized_global_0_f)
+from fem_helpers_2d import local_to_global
+edges, element_to_edge, edge_reversed = edge_information(triangles)
+edge_offset = vertices_1d**2
+internal_offset = edge_offset + number_of_edge_points
+num_global_DoFs = internal_offset + ((degree-1)*(degree-2) // 2) * triangles.shape[0]
+global_mapping = vectorized_local_to_global(triangles,
+        element_to_edge,
+        edge_reversed,
+        node_mapping,
+        edge_offset,
+        internal_offset,
+        degree
+)
+dirichlet_mask = vectorized_edge_condition_to_dirichlet_mask(triangles,
+        boundary_conditions,
+        element_to_edge,
+        vertices_1d**2,
+        num_global_DoFs,
+        degree)
+A_sparse = vectorized_global_1_1(
+        triangles,
+        geometry,
+        dirichlet_mask,
+        global_mapping,
+        precomputed_gradhat_phihats,
+        quad_weights,
+        )
+F_sparse = vectorized_global_0_f(triangles,
+        geometry,
+        dirichlet_mask,
+        global_mapping,
+        precomputed_phihats,
+        quad_cart_pts,
+        quad_weights)
+
+'''
+import time
+
+start = time.perf_counter()
 dirichlet_mask = edge_condition_to_dirichlet_mask(
         triangles,
         boundary_conditions,
@@ -96,7 +141,10 @@ dirichlet_mask = edge_condition_to_dirichlet_mask(
         vertices_1d**2 + number_of_edge_points + ((degree-1)*(degree-2) // 2) * triangles.shape[0],
         vertices_1d**2,
         degree)
+elapsed = time.perf_counter() - start
+print("dirichlet_mask takes ", elapsed)
 
+start = time.perf_counter()
 A_sparse = global_1_1(triangles,
            geometry,
            dirichlet_mask,
@@ -108,7 +156,10 @@ A_sparse = global_1_1(triangles,
            quad_weights,
            degree
            )
+elapsed = time.perf_counter() - start
+print("Stiffness takes ", elapsed)
 
+start = time.perf_counter()
 F_sparse = global_0_f(triangles,
                       geometry,
                       dirichlet_mask,
@@ -120,6 +171,9 @@ F_sparse = global_0_f(triangles,
                         quad_cart_pts,
                       quad_weights,
                       degree)
+elapsed = time.perf_counter() - start
+'''
+# print("RHS formation takes ", elapsed)
 import scipy.sparse
 import scipy.sparse.linalg
 

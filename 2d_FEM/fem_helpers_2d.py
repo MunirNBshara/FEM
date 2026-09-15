@@ -3,21 +3,36 @@ import math
 
 
 '''
-Generates polynomial in least degree to highest degree nested with highest degree x to highest degree y.
-Ex degree 2:
-    1,x,y,x^2,xy,y^2
+Generates polynomial from reference point.
+Ordering: lowest->highest degree, powers shift from x->y.
+
+Inputs:
+    x: torch.Tensor - x coord
+    y: torch.Tensor - y coord
+    degree: int = 1 - polynomial degree
+Output:
+    torch.Tensor - evaluated polynomial
 '''
-def ref_pt_to_poly(x: torch.Tensor, y: torch.Tensor, degree: int = 1):
+def pt_to_poly(x: torch.Tensor, y: torch.Tensor, degree: int = 1) -> torch.Tensor:
     poly = []
     for i in range(degree+1):
         for j in range(i+1):
             poly.append(x**(i-j) * y**(j))
     return torch.stack(poly, dim=-1)
+
 '''
-Generates Nd x 2 matrix representing gradient of the polynomial expansion
+Evaluates gradient of polynomial.
+Ordering: lowest->highest degree, powers shift from x->y
+
+Inputs:
+    x: torch.Tensor - x coord
+    y: torch.Tensor - y coord
+    degree: int = 1 - polynomial degree
+Outputs:
+    torch.Tensor - Nd by 2 matrix, first column dx, second dy
 '''
-def ref_pt_to_poly_gradient(x: torch.Tensor, y:torch.Tensor, degree: int = 1):
-    terms = (degree+1) * (degree + 2) // 2
+def pt_to_poly_grad(x: torch.Tensor, y:torch.Tensor, degree: int = 1) -> torch.Tensor:
+    terms = (degree + 1) * (degree + 2) // 2
     poly_grad_x = torch.zeros(x.shape[-1], terms, dtype = x.dtype)
     poly_grad_y = torch.zeros(y.shape[-1], terms, dtype = x.dtype)
     idx = 0
@@ -30,26 +45,36 @@ def ref_pt_to_poly_gradient(x: torch.Tensor, y:torch.Tensor, degree: int = 1):
             idx+=1
     return torch.stack((poly_grad_x,poly_grad_y), dim=-1)
 
-
-
 '''
-Generates appopriate points on reference triangular simplex for an nth degree polynomial
+Generates nodal points on reference simplex for an nth degree trial basis
 Generation is based on barycentric coordinates where
-i/deg + k/deg + j/deg = 1
+    i/deg + j/deg + k/deg = 1
+Ordering: increasing L1 norm with equivalent norm being ordered by ascending y
 
-Ordering goes in increasing L1 norm with equivalent norm being ordered by ascending y
+Inputs:
+    degree: int = 1 - polynomial degree
+Outputs:
+    torch.Tensor - rational points in [0,1] x [0,1-x](triangular domain) 
 '''
-def ref_nodes_cart(degree: int = 1):
+def ref_nodal_pts_cart(degree: int = 1) -> torch.Tensor:
     nodes = []
 
     for i in range(degree, -1, -1):
-        for j in range(degree-i,-1,-1):
+        for j in range(degree-i, -1, -1):
             k = degree - i - j
             nodes.append((j / degree, k / degree))
 
     return torch.tensor(nodes)
 
-def ref_nodes_bary(degree: int = 1):
+'''
+Same as ref_nodal_pts_cart but in barycentric coordinates.
+
+Inputs:
+    degree: int = 1 - polynomial degree
+Outputs:
+    torch.Tensor - rational points in [0,1]^3
+'''
+def ref_nodal_pts_bary(degree: int = 1) -> torch.Tensor:
     nodes = []
 
     for i in range(degree, -1, -1):
@@ -59,37 +84,53 @@ def ref_nodes_bary(degree: int = 1):
 
     return torch.tensor(nodes)
 '''
-1 vertex,
-2 edge,
-3 internal
+Identifies where the nodal point lay on a simplex.
+Mapping(where the point lies):
+    1 - Vertex
+    2 - Edge
+    3 - Internal
+
+Inputs:
+    pts_bary: torch.Tensor - points in barycentric coordinates
+    tol: float(1e-6) - zero tolerance
+Output:
+    torch.Tensor - pts_bary.shape[-2] with identities listed out 
 '''
-def node_identifier(bary_pts: torch.Tensor, tol = 1e-6):
-    bary_pts_type = torch.zeros(bary_pts.shape[-2])
-    for idx in range(bary_pts.shape[-2]):
-        pt = bary_pts[..., idx, :]
+def pts_bary_to_identity(pts_bary: torch.Tensor, tol: float = 1e-6) -> torch.Tensor:
+    identities = torch.zeros(pts_bary.shape[-2])
+    for idx in range(pts_bary.shape[-2]):
+        pt = pts_bary[..., idx, :]
         nz_mask = torch.where(abs(pt)>tol, 1.0,0.0)
         nnz = torch.sum(nz_mask, dim =-1)
         if nnz < 1:
-            bary_pts_type[idx] = 3
+            identities[idx] = 3
         elif nnz < 2:
-            bary_pts_type[idx] = 2
+            identities[idx] = 2
         else:
-            bary_pts_type[idx] = 1
-    return bary_pts_type
+            identities[idx] = 1
+    return identities
 
 '''
-units digit:
-1 vertex,
-2 edge,
-3 internal
+Identify detailed location of points as dictated by ref_nodal_pts_cart.
+Mapping(where the point lies):
+    Units:
+        1 - Vertex
+        2 - Edge 
+        3 - Internal
+    Tens: 
+        Vertex numbering - 1,2,3 IN SAME ORDER AS NODAL POINT CONSTRUCTION
+        Edge numbering - side opposite to vertex of the same number
+        Internal numbering - SAME ORDER AS NODAL POINT CONSTRUCTION
+    Hundreds:
+        Vertex/Internal - No meaning
+        Edge numbering - order within the edge. SAME ORDER AS NODAL POINT CONSTRUCTION
 
-tens digit:
-vertex/edge number
-
-hundreds+:
-relative order
+Inputs:
+    degree: int(1) - degree of nodal basis
+Outputs:
+    torch.Tensor - detailed point reference
 '''
-def detailed_node_identifier(degree = 1):
+def ref_nodal_pt_to_identity_detailed(degree: int = 1) -> torch.Tensor:
     identifiers = []
     internal_ct = 1
     for i in range(degree, -1, -1):
@@ -106,7 +147,6 @@ def detailed_node_identifier(degree = 1):
                 elif j==0:
                     if k==0:
                         identifier+=1*10
-
             elif identifier == 2:
                 if i==0:
                     identifier+=10 + 100*k 
@@ -122,29 +162,54 @@ def detailed_node_identifier(degree = 1):
 
 
 '''
-Finds appropriate polynomial functions for delta_mn linear function on every node
-each row is 1 polynomial function of appropriate degree that ensures at the everything
-except the reference node at interest is 0.
+Generates appropriate matrix transform from cartesian polynomial to nodal coord
 
-evaluated polynomial -> nodal coordinates
+Takes reference nodal pts -> converts to polynomial -> 
+    solves for matrix which when applied to polynomial gives delta_mn
+
+Inputs:
+    degree: int(1) - nodal degree
+Outputs:
+    torch.Tensor - square matrix which converts cartesian polynomial to nodal coords
 '''
-def poly_to_nodal_coords(degree: int = 1):
-    nodes = ref_nodes_cart(degree)
+def poly_to_nodal_transform(degree: int = 1) -> torch.Tensor:
+    nodes = ref_nodal_pts_cart(degree)
     xhat = nodes[:, 0]
     yhat = nodes[:, 1]
 
-    V = ref_pt_to_poly(xhat, yhat, degree).T
+    V = pt_to_poly(xhat, yhat, degree).T
     C = torch.linalg.solve(V, torch.eye(
         V.shape[0],
     ))
 
     return torch.where(C.abs() > 1e-6, C, torch.zeros_like(C))
 
+'''
+Index in cartesian polynomial based x and y degrees.
+Ordering: lowest->highest degree, powers shift from x->y
 
+Inputs:
+    x_power: int
+    y_power: int
+Returns:
+    int - Index relative to 0.
+'''
 def cartesian_index(x_power: int, y_power: int) -> int:
     total = x_power + y_power
     return total * (total + 1) // 2 + y_power
 
+'''
+Index in barycentric polynomial based on lambda_i degrees
+Ordering: i order followed by j followed by k.
+
+Inputs:
+    i: int - vertex 1 power
+    j: int - vertex 2 power
+    k: int - vertex 3 power
+    degree: int - nodal degree
+Outputs:
+    int - Index relative to 0.
+'''
 def barycentric_index(
     i: int,
     j: int,
@@ -157,14 +222,14 @@ def barycentric_index(
     return block * (block + 1) // 2 + k
 
 '''
-evaluated polynomial to barycentric polynomial
-'''
-def poly_to_bpoly(degree=1):
-    # lambda_1 = (1 -xhat - yhat)
-    # lambda_2 = xhat
-    # lambda_3 = yhat
+Generates transform to go from cartesian polynomial to barycentric polynomial
 
-    # change of basis deg 1
+Inputs:
+    degree: int(1) - nodal degree
+Outputs:
+    torch.Tensor - change of basis matrix 
+'''
+def poly_to_bpoly_transform(degree: int = 1) -> torch.Tensor:
     terms = (degree + 1) * (degree + 2) // 2
 
     A = torch.zeros((terms, terms))
@@ -199,12 +264,18 @@ def poly_to_bpoly(degree=1):
     return A
 
 '''
-barycentric polynomial to barycentric coords
+Converts barycentric polynomial to barycentric points
+This could be made more accurate using information from cross terms
+Inputs:
+    bary: torch.Tensor - barycentric polynomial to convert
+    degree: int(1) - degree of polynomial 
+Outputs:
+    torch.Tensor - [lambda_1, lambda_2, lambda_3]
 '''
-def bpoly_to_bcoords(bary: torch.Tensor, degree: int):
-    lambda1_d = bary[..., 0]
-    lambda2_d = bary[..., degree * (degree + 1) // 2]
-    lambda3_d = bary[..., -1]
+def bpoly_to_pts_bary(bpoly: torch.Tensor, degree: int = 1) -> torch.Tensor:
+    lambda1_d = bpoly[..., 0]
+    lambda2_d = bpoly[..., degree * (degree + 1) // 2]
+    lambda3_d = bpoly[..., -1]
 
     pure_powers = torch.stack(
         [lambda1_d, lambda2_d, lambda3_d],
@@ -214,12 +285,18 @@ def bpoly_to_bcoords(bary: torch.Tensor, degree: int):
     return pure_powers.clamp_min(0).pow(1.0 / degree)
 
 '''
-barycentric coords to barycentric polynomial
+Converts barycentric points to barycentric polynomial
+
+Inputs:
+    pts_bary: torch.Tensor - barycentric points to be converted
+    degree: int(1) - degree of polynomial
+Outputs:
+    torch.Tensor - barycentric polynomial
 '''
-def bary_coords_to_poly(coords: torch.Tensor, degree: int):
-    lambda1 = coords[...,0]
-    lambda2 = coords[...,1]
-    lambda3 = coords[...,2]
+def pts_bary_to_bpoly(pts_bary: torch.Tensor, degree: int = 1):
+    lambda1 = pts_bary[...,0]
+    lambda2 = pts_bary[...,1]
+    lambda3 = pts_bary[...,2]
     poly = []
     for i in range(degree, -1, -1):
         for j in range(degree-i, -1, -1):
@@ -228,37 +305,57 @@ def bary_coords_to_poly(coords: torch.Tensor, degree: int):
     return torch.stack(poly, dim=-1)
 
 '''
-barycentric polynomial to nodal coords
-'''
-def bary_poly_to_nodal(poly_b: torch.Tensor, degree: int):
-    A = poly_to_bpoly(degree)
-    C = poly_to_nodal_coords(degree)
+Converts barycentric polynomial to nodal points
 
-    poly_cartesian = torch.linalg.solve(A, poly_b)
+Inputs:
+    bpoly: torch.Tensor - barycentric polynomial
+    degree: int(1) - nodal and barycentric degree
+Outputs:
+    torch.Tensor - nodal points 
+'''
+def bpoly_to_nodal(bpoly: torch.Tensor, degree: int) -> torch.Tensor:
+    A = poly_to_bpoly_transform(degree)
+    C = poly_to_nodal_transform(degree)
+
+    poly_cartesian = torch.linalg.solve(A, bpoly)
     return C @ poly_cartesian
 
-def bary_to_cart(bary_pts: torch.Tensor):
-    return torch.stack((bary_pts[...,-2],bary_pts[...,-1]), dim=-1)
+'''
+Converts barycentric pts to cartesian pts
+
+Inputs: 
+    pts_bary: torch.Tensor - barycentric polynomial
+Outputs:
+    torch.Tensor - cartesian coordinates
+'''
+def pts_bary_to_pts(pts_bary: torch.Tensor) -> torch.Tensor:
+    return torch.stack((pts_bary[...,-2],pts_bary[...,-1]), dim=-1)
+
 '''
 Takes simplex, outputs local stiffness matrix
+
+Inputs: 
+    simplex: torch.Tensor - simplex to integrate over
+    precomputed_gradhat_phihats: torch.Tensor - precomputed transforms
+Outputs:
+    torch.Tensor - integral over one simplex
 '''
 def local_1_1(simplex: torch.Tensor,
               precomputed_gradhat_phihats: torch.Tensor,
-              weights: torch.Tensor):
+              weights: torch.Tensor) -> torch.Tensor:
     x1, y1 = simplex[0]
     x2, y2 = simplex[1]
     x3, y3 = simplex[2]
 
     # must be computed every local index, can replace with adjoint
-    dx_dxhat = torch.Tensor([[x2 - x1, x3 - x1], [y2 - y1, y3 - y1]])
-    dxhat_dx = torch.linalg.inv(dx_dxhat)
-    scaling = torch.abs(torch.linalg.det(dx_dxhat))
+    # dx_dxhat = torch.Tensor([[x2 - x1, x3 - x1], [y2 - y1, y3 - y1]])
+    # dxhat_dx = torch.linalg.inv(dx_dxhat)
+    # scaling = torch.abs(torch.linalg.det(dx_dxhat))
+    adjugate = torch.Tensor([[y3 - y1, -(x3 - x1)], [-(y2 - y1), x2 - x1]])
+    scaling = 1 / torch.abs(adjugate[0,0]*adjugate[1,1] - adjugate[0,1]*adjugate[1,0])
 
     # integrate
-
-    quadrature_size, nodal_basis_size = precomputed_gradhat_phihats.shape[:2]
-    A = torch.zeros((nodal_basis_size, nodal_basis_size), dtype=torch.float32)
-    G = precomputed_gradhat_phihats @ dxhat_dx
+    G = precomputed_gradhat_phihats @ adjugate
 
     A = torch.einsum(
         "q,qia,qja->ij",
@@ -268,7 +365,23 @@ def local_1_1(simplex: torch.Tensor,
     )
 
     return scaling * A
+'''
+Obtain global stiffness matrix
 
+Inputs:
+    topology: torch.Tensor - connectivity for each triangle
+    geometry: torch.Tensor - location of each vertex 
+    dirichlet_mask: torch.Tensor - nodal points to be excluded from the construction
+    node_mapping: torch.Tensor - mapping of nodal points to type of point 
+    top_to_edge: dict - edge vertices to edge number 
+    edge_offset: int - number of vertices
+    internal_offset: int - number of vertices + number of edges
+    precomputed_gradhat_phihats: torch.Tensor - precomputed quadrature simplex irrespective transform
+    weights: torch.Tensor - weights for quadrature weights
+    degree: int(1) - nodal degree
+Outputs:
+    torch.Tensor - Sparse COO matrix
+'''
 def global_1_1(topology: torch.Tensor,
                geometry: torch.Tensor,
                dirichlet_mask: torch.Tensor,
@@ -279,9 +392,8 @@ def global_1_1(topology: torch.Tensor,
                precomputed_gradhat_phihats: torch.Tensor,
                weights: torch.Tensor,
                degree: int = 1
-               ):
+               ) -> torch.Tensor:
     num_internal_pts = (degree-1)*(degree-2) // 2
-    free_nodal_points =  int((~dirichlet_mask).sum().item())
     nodal_points = internal_offset + num_internal_pts*topology.shape[0]
     row_parts = []
     col_parts = []
@@ -344,29 +456,58 @@ def global_1_1(topology: torch.Tensor,
     return A
         
 '''
-Take hat space points and compute gradient
+Construct derivative of phihat w.r.t. the reference coordinates
+
+Inputs:
+    xhat: torch.Tensor - xhat point
+    yhat: torch.Tensor - yhat point
+    degree: int(1) - nodal degree 
+Outputs:
+    torch.Tensor - derivative matrix
 '''
-def gradhat_phihat(xhat: torch.Tensor, yhat: torch.Tensor, degree: int = 1):
+def gradhat_phihat(xhat: torch.Tensor, yhat: torch.Tensor, degree: int = 1) -> torch.Tensor:
 
     return torch.einsum(
             "ij,qjk->qik",
-            poly_to_nodal_coords(degree),
-            ref_pt_to_poly_gradient(xhat, yhat, degree)
-            )
-def phihat(xhat: torch.Tensor, yhat: torch.Tensor, degree: int = 1):
-    return torch.einsum(
-            "ij,qj->qi",
-            poly_to_nodal_coords(degree),
-            ref_pt_to_poly(xhat, yhat, degree)
+            poly_to_nodal_transform(degree),
+            pt_to_poly_grad(xhat, yhat, degree)
             )
 
+'''
+Compute phihat w.r.t reference coordinates
+Inputs:
+    xhat: torch.Tensor - xhat point
+    yhat: torch.Tensor - yhat point
+    degree: int(1) - nodal degree 
+Outputs:
+    torch.Tensor - derivative matrix
+'''
+def phihat(xhat: torch.Tensor, yhat: torch.Tensor, degree: int = 1) -> torch.Tensor:
+    return torch.einsum(
+            "ij,qj->qi",
+            poly_to_nodal_transform(degree),
+            pt_to_poly(xhat, yhat, degree)
+            )
+'''
+Converts edge condition matrix list to dirichlet mask
+
+Inputs:
+    triangles: torch.Tensor - topology of triangles
+    boundary_conditions: torch.Tensor - Type of boundary condition list
+    top_to_edge: dict - given edge give me global index
+    nodal_DoFs: int - number of global degrees of freedom
+    edge_offset: int - total number of vertices
+    degree: int(1) - degree of nodal points
+Outputs:
+    torch.Tensor - boolean tensor where dirichlet conditions take place
+'''
 def edge_condition_to_dirichlet_mask(
         triangles: torch.Tensor,
         boundary_conditions: torch.Tensor,
         top_to_edge: dict,
         nodal_DoFs: int,
         edge_offset: int,
-        degree: int = 1):
+        degree: int = 1) -> torch.Tensor:
     dirichlet_mask = torch.zeros(nodal_DoFs, dtype=torch.bool)
     for idx, triangle in enumerate(triangles):
         edges = [triangle[1:], triangle[::2], triangle[:2]]
@@ -380,13 +521,27 @@ def edge_condition_to_dirichlet_mask(
                 dirichlet_mask[edge_starting_loc:edge_starting_loc+(degree-1)] = True
     return dirichlet_mask
 
+'''
+Converts local index to global index.
+
+Inputs:
+    triangle: torch.Tensor - a single triangle
+    triangle_idx: int - which triangle
+    node_mapping: torch.Tensor - type of node
+    top_to_edge: dict - given edge give me global index
+    edge_offset: int - total number of vertices
+    internal_offset: int - total number of vertices + total number of edges
+    degree: int(1) - degree of nodal points
+Outputs:
+    torch.Tensor - mapping array
+'''
 def local_to_global(triangle: torch.Tensor,
                     triangle_idx: int,
                     node_mapping: torch.Tensor,
                     top_to_edge: dict,
                     edge_offset: int,
                     internal_offset: int,
-                    degree: int = 1):
+                    degree: int = 1) -> torch.Tensor:
     edges = [triangle[1:], triangle[::2], triangle[:2]]
     edges_tuple_list = []
     permutations = []
@@ -429,18 +584,34 @@ def local_to_global(triangle: torch.Tensor,
 
     return mapping
 
+
+    
+'''
+Local forcing matrix
+
+Inputs:
+    simplex: torch.Tensor - geometric position of triangle
+    precomputed_phihats: torch.Tensor - precomputed phihat functions
+    quad_pts: torch.Tensor - quadrature pts 
+    weights: torch.Tensor - quadrature weights 
+    
+Outputs:
+    torch.Tensor - local forcing function
+'''
 def local_0_f(simplex: torch.Tensor,
               precomputed_phihats: torch.Tensor,
               quad_pts: torch.Tensor,
-              weights: torch.Tensor):
+              weights: torch.Tensor) -> torch.Tensor:
     x1, y1 = simplex[0]
     x2, y2 = simplex[1]
     x3, y3 = simplex[2]
 
     # must be computed every local index, can replace with adjoint
-    dx_dxhat = torch.Tensor([[x2 - x1, x3 - x1], [y2 - y1, y3 - y1]])
-    dxhat_dx = torch.linalg.inv(dx_dxhat)
-    scaling = torch.abs(torch.linalg.det(dx_dxhat))
+    # dx_dxhat = torch.Tensor([[x2 - x1, x3 - x1], [y2 - y1, y3 - y1]])
+    # dxhat_dx = torch.linalg.inv(dx_dxhat)
+    # scaling = torch.abs(torch.linalg.det(dx_dxhat))
+    adjugate = torch.Tensor([[y3 - y1, -(x3 - x1)], [-(y2 - y1), x2 - x1]])
+    scaling = torch.abs(adjugate[0,0]*adjugate[1,1] - adjugate[1,0]*adjugate[0,1])
     def f(x, y):
         return (
             2 * torch.pi**2
@@ -450,7 +621,7 @@ def local_0_f(simplex: torch.Tensor,
     # integrate
     pts = torch.einsum(
             "ij,qj->qi",
-            dx_dxhat,
+            adjugate,
             quad_pts) + simplex[0][None,...]
 
     f_evaled = f(pts[...,-2], pts[..., -1])
@@ -468,7 +639,24 @@ def local_0_f(simplex: torch.Tensor,
     )
 
     return scaling * A
+'''
+Obtain global forcing matrix
 
+Inputs:
+    topology: torch.Tensor - connectivity for each triangle
+    geometry: torch.Tensor - location of each vertex 
+    dirichlet_mask: torch.Tensor - nodal points to be excluded from the construction
+    node_mapping: torch.Tensor - mapping of nodal points to type of point 
+    top_to_edge: dict - edge vertices to edge number 
+    edge_offset: int - number of vertices
+    internal_offset: int - number of vertices + number of edges
+    precomputed_gradhat_phihats: torch.Tensor - precomputed quadrature simplex irrespective transform
+    quad_pts: torch.Tensor, points for quadrature
+    weights: torch.Tensor - weights for quadrature weights
+    degree: int(1) - nodal degree
+Outputs:
+    torch.Tensor - Sparse COO matrix
+'''
 def global_0_f(topology: torch.Tensor,
                geometry: torch.Tensor,
                dirichlet_mask: torch.Tensor,
@@ -522,4 +710,5 @@ def global_0_f(topology: torch.Tensor,
         device=sparse_values.device,
     ).coalesce()
     return A
-     
+
+
