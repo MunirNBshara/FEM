@@ -39,7 +39,7 @@ def vectorized_local_to_global(
     num_local_DoFs = node_mapping.shape[0]
     mapping = torch.empty(
         (num_triangles, num_local_DoFs),
-        dtype = torch.int32
+        dtype = torch.long
     )
     node_type = node_mapping % 10
     node_order = (node_mapping // 10) % 10 - 1
@@ -57,7 +57,7 @@ def vectorized_local_to_global(
             edge_reversed[:, node_order[edge]],
             degree - edge_order[edge] - 2,
             edge_order[edge])
-        mapping[..., edge] = (edge_mapping*(degree - 1) + edge_offset + corrected_edge_order).to(torch.int32)
+        mapping[..., edge] = (edge_mapping*(degree - 1) + edge_offset + corrected_edge_order).to(torch.long)
     if torch.any(internal):
         mapping[..., internal] = ( torch.arange(num_triangles)[:, None] 
                                   * ((degree - 1) * (degree - 2)) // 2 +
@@ -202,11 +202,19 @@ def vectorized_global_1_1(
     )
 
     return A.coalesce()
+
+def f(x, y):
+    return (
+        2 * torch.pi**2
+        * torch.sin(torch.pi * x)
+        * torch.sin(torch.pi * y)
+    )
 def vectorized_local_0_f(
         geometry: torch.Tensor,
         precomputed_phihats: torch.Tensor,
         quad_pts: torch.Tensor,
         quad_weights: torch.Tensor,
+        forcing
         ):
     pts1 = geometry[..., 0, :]
     pts2 = geometry[..., 1, :]
@@ -224,19 +232,13 @@ def vectorized_local_0_f(
         dim=-2,
     )
     determinant = a * d - b * c
-    def f(x, y):
-        return (
-            2 * torch.pi**2
-            * torch.sin(torch.pi * x)
-            * torch.sin(torch.pi * y)
-        )
     # integrate
     pts = torch.einsum(
             "eij,qj->eqi",
             jacobian,
             quad_pts) + pts1[:,None,:]
 
-    f_evaled = f(pts[...,-2], pts[..., -1])
+    f_evaled = forcing(pts[...,-2], pts[..., -1])
 
     G = precomputed_phihats
     A = torch.einsum(
@@ -257,9 +259,10 @@ def vectorized_global_0_f(
         precomputed_phihats: torch.Tensor,
         quad_pts: torch.Tensor,
         quad_weights: torch.Tensor,
+        forcing
         ):
     
-    A_local = vectorized_local_0_f(geometry[topology], precomputed_phihats, quad_pts, quad_weights)
+    A_local = vectorized_local_0_f(geometry[topology], precomputed_phihats, quad_pts, quad_weights, forcing)
 
     rows = global_mapping
     local_dirichlet = dirichlet_mask[global_mapping]

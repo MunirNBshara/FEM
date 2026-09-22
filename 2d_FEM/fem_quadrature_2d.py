@@ -1,4 +1,27 @@
 import torch
+
+'''
+On [0,1]
+'''
+def gaussian_quadrature(degree: int = 1):
+    n = (degree + 1) // 2 + (degree + 1) % 2
+
+    J = torch.zeros((n, n))
+
+    if n > 1:
+        k = torch.arange(1, n)
+        beta = k / torch.sqrt(4 * k**2 - 1)
+
+        indices = torch.arange(n - 1)
+        J[indices, indices + 1] = beta
+        J[indices + 1, indices] = beta
+
+    points_minus1_1, eigenvectors = torch.linalg.eigh(J)
+    weights_minus1_1 = 2 * eigenvectors[0, :] ** 2
+
+    points = (points_minus1_1 + 1) / 2
+    weights = weights_minus1_1 / 2
+    return points, weights
 '''
 Symmetric quadrature lookup table. Given degree returns weights and points up to degree 6.
 

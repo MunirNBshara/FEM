@@ -44,6 +44,23 @@ def pt_to_poly_grad(x: torch.Tensor, y:torch.Tensor, degree: int = 1) -> torch.T
                 poly_grad_x[..., idx] = ((i-j)*x**(i-j-1) * y**(j))
             idx+=1
     return torch.stack((poly_grad_x,poly_grad_y), dim=-1)
+def pt_to_poly_hessian(x: torch.Tensor, y:torch.Tensor, degree: int = 1) -> torch.Tensor:
+    terms = (degree + 1) * (degree + 2) // 2
+    poly_grad_x = torch.zeros(x.shape[-1], terms, 2, dtype = x.dtype)
+    poly_grad_y = torch.zeros(y.shape[-1], terms, 2, dtype = y.dtype)
+    idx = 0
+    for i in range(degree+1):
+        for j in range(i+1):
+            if j!=0 and (i-j)!=0:
+                poly_grad_y[..., idx, 0] = ((i-j)*x**(i-j-1) * j * y**(j-1))
+                poly_grad_x[..., idx, 1] = ((i-j)*x**(i-j-1) * j * y**(j-1))
+            if j>1:
+                poly_grad_y[..., idx, 1] = (x**(i-j) * j * (j-1) * y**(j-2))
+            if (i-j)>0:
+                poly_grad_x[..., idx, 0] = ((i-j)*(i-j-1)*x**(i-j-2) * y**(j))
+            idx+=1
+    return torch.stack((poly_grad_x,poly_grad_y), dim=-1)
+
 
 '''
 Generates nodal points on reference simplex for an nth degree trial basis
@@ -488,6 +505,30 @@ def phihat(xhat: torch.Tensor, yhat: torch.Tensor, degree: int = 1) -> torch.Ten
             poly_to_nodal_transform(degree),
             pt_to_poly(xhat, yhat, degree)
             )
+
+def hessianhat(xhat: torch.Tensor, yhat: torch.Tensor, degree: int = 1) -> torch.Tensor:
+    return torch.einsum(
+            "ij,qjkl->qikl",
+            poly_to_nodal_transform(degree),
+            pt_to_poly_hessian(xhat, yhat, degree)
+            )
+
+    
+
+    
+def gradhat_edge(xhat: torch.Tensor, degree: int = 1) -> torch.Tensor:
+    
+    edge1_quad_pts = torch.stack((xhat,1-xhat), dim=-1)
+    edge2_quad_pts = torch.stack((torch.zeros(xhat.shape[0]), xhat), dim=-1)
+    edge3_quad_pts = torch.stack((xhat,torch.zeros(xhat.shape[0])), dim=-1)
+
+    edge1_grad = gradhat_phihat(edge1_quad_pts[...,-2], edge1_quad_pts[...,-1], degree)
+    edge2_grad = gradhat_phihat(edge2_quad_pts[...,-2], edge2_quad_pts[...,-1], degree)
+    edge3_grad = gradhat_phihat(edge3_quad_pts[...,-2], edge3_quad_pts[...,-1], degree)
+   
+    gradhat = torch.stack((edge1_grad, edge2_grad, edge3_grad), dim = -1)
+    return gradhat
+
 '''
 Converts edge condition matrix list to dirichlet mask
 
@@ -584,7 +625,12 @@ def local_to_global(triangle: torch.Tensor,
 
     return mapping
 
-
+def f(x, y):
+    return (
+        2 * torch.pi**2
+        * torch.sin(torch.pi * x)
+        * torch.sin(torch.pi * y)
+    )
     
 '''
 Local forcing matrix
@@ -601,7 +647,8 @@ Outputs:
 def local_0_f(simplex: torch.Tensor,
               precomputed_phihats: torch.Tensor,
               quad_pts: torch.Tensor,
-              weights: torch.Tensor) -> torch.Tensor:
+              weights: torch.Tensor,
+              forcing) -> torch.Tensor:
     x1, y1 = simplex[0]
     x2, y2 = simplex[1]
     x3, y3 = simplex[2]
@@ -612,19 +659,14 @@ def local_0_f(simplex: torch.Tensor,
     # scaling = torch.abs(torch.linalg.det(dx_dxhat))
     adjugate = torch.Tensor([[y3 - y1, -(x3 - x1)], [-(y2 - y1), x2 - x1]])
     scaling = torch.abs(adjugate[0,0]*adjugate[1,1] - adjugate[1,0]*adjugate[0,1])
-    def f(x, y):
-        return (
-            2 * torch.pi**2
-            * torch.sin(torch.pi * x)
-            * torch.sin(torch.pi * y)
-        )
+
     # integrate
     pts = torch.einsum(
             "ij,qj->qi",
             adjugate,
             quad_pts) + simplex[0][None,...]
 
-    f_evaled = f(pts[...,-2], pts[..., -1])
+    f_evaled = forcing(pts[...,-2], pts[..., -1])
 
     quadrature_size, nodal_basis_size = precomputed_phihats.shape[:2]
     A = torch.zeros((nodal_basis_size), dtype=torch.float32)
@@ -667,6 +709,7 @@ def global_0_f(topology: torch.Tensor,
                precomputed_phihats: torch.Tensor,
                quad_pts: torch.Tensor,
                weights: torch.Tensor,
+               forcing,
                degree: int = 1):
     num_internal_pts = (degree-1)*(degree-2) // 2
     free_nodal_points =  int((~dirichlet_mask).sum().item())
@@ -677,7 +720,7 @@ def global_0_f(topology: torch.Tensor,
     for idx, points in enumerate(topology):
         simplex = torch.stack((geometry[points[0]], geometry[points[1]], geometry[points[2]]),
                               dim=0)
-        A_local = local_0_f(simplex, precomputed_phihats, quad_pts, weights) 
+        A_local = local_0_f(simplex, precomputed_phihats, quad_pts, weights, forcing) 
         local_to_global_mapping = local_to_global(points,
                         idx,
                         node_mapping,

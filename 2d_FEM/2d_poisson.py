@@ -8,11 +8,14 @@ from fem_helpers_2d import (
         pts_bary_to_pts,
         ref_nodal_pt_to_identity_detailed,
         edge_condition_to_dirichlet_mask,
-        phihat)
-from fem_quadrature_2d import dunavant_rules
+        phihat,
+        gradhat_edge,
+        hessianhat)
+from fem_quadrature_2d import (dunavant_rules, gaussian_quadrature)
 
 degree = 2
 quad_bary_pts, quad_weights = dunavant_rules(degree)
+quad_pts_1d, quad_weights_1d = gaussian_quadrature(degree)
 quad_cart_pts = pts_bary_to_pts(quad_bary_pts)
 precomputed_phihats = phihat(
         quad_cart_pts[..., -2],
@@ -26,11 +29,11 @@ precomputed_gradhat_phihats = gradhat_phihat(
 simplex = torch.Tensor([[0, 0], [1, 0], [0, 1.0]])
 
 
-cells_1d = 100
+cells_1d = 200
 vertices_1d = cells_1d + 1
 
-dx = 0.01
-dy = 0.01
+dx = 0.005
+dy = 0.005
 x_pts = torch.arange(vertices_1d, dtype=torch.int32) * dx
 y_pts = torch.arange(vertices_1d, dtype=torch.int32) * dy
 
@@ -122,14 +125,21 @@ A_sparse = vectorized_global_1_1(
         precomputed_gradhat_phihats,
         quad_weights,
         )
+def forcing(x, y):
+    return (
+        2 * torch.pi**2
+        * torch.sin(torch.pi * x)
+        * torch.sin(torch.pi * y)
+    )
+
 F_sparse = vectorized_global_0_f(triangles,
         geometry,
         dirichlet_mask,
         global_mapping,
         precomputed_phihats,
         quad_cart_pts,
-        quad_weights)
-
+        quad_weights,
+        forcing)
 '''
 import time
 
@@ -196,7 +206,30 @@ u_numpy = scipy.sparse.linalg.spsolve(
 )
 
 u = torch.from_numpy(u_numpy)
+from adaptive_helpers import compute_eta, mark_refinement
+
+precomputed_gradhat = gradhat_edge(quad_pts_1d,
+             degree)
+precomputed_hessianhat = hessianhat(quad_cart_pts[..., -2], quad_cart_pts[..., -1],
+                                   degree)
+etas = compute_eta(triangles,
+                geometry,
+                quad_cart_pts,
+                quad_weights,
+                quad_weights_1d,
+                global_mapping,
+                u,
+                element_to_edge,
+                forcing,
+                boundary_conditions,
+                precomputed_hessianhat,
+                precomputed_gradhat,
+                internal_offset-edge_offset)
+print(max(etas))
+print(min(etas))
 print(u.shape)
+triangles = mark_refinement(etas)
+print(triangles.shape)
 
 import matplotlib.pyplot as plt
 number_of_vertices = geometry.shape[0]
